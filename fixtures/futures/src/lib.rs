@@ -127,8 +127,81 @@ pub async fn say_after_with_tokio(secs: u8, who: String) -> String {
     format!("Hello, {who} (with Tokio)!")
 }
 
+#[derive(uniffi::Error, Debug)]
+pub enum MyError {
+    Foo,
+}
+
+//#[uniffi::export]
+pub async fn fallible_me(do_fail: bool) -> Result<u8, MyError> {
+    if do_fail {
+        dbg!("Err(MyError::Foo)");
+        Err(MyError::Foo)
+    } else {
+        dbg!("Ok(42)");
+        Ok(42)
+    }
+}
+
+#[doc(hidden)]
+#[no_mangle]
+pub extern "C" fn _uniffi_uniffi_futures_fallible_me_d39d(
+    arg0: <bool as ::uniffi::FfiConverter>::FfiType,
+    call_status: &mut ::uniffi::RustCallStatus,
+) -> Option<Box<::uniffi::RustFuture<Result<u8, MyError>>>> {
+    ::uniffi::call_with_output(call_status, || {
+        Some(Box::new(::uniffi::RustFuture::new(async move {
+            fallible_me(
+                <bool as ::uniffi::FfiConverter>::try_lift(arg0)
+                    .unwrap_or_else(|err| panic!("foo bar baz hack")),
+            )
+            .await
+        })))
+    })
+}
+
+#[doc(hidden)]
+#[no_mangle]
+pub extern "C" fn _uniffi_uniffi_futures_fallible_me_d39d_poll(
+    future: ::std::option::Option<&mut ::uniffi::RustFuture<Result<u8, MyError>>>,
+    waker: ::std::option::Option<::uniffi::RustFutureForeignWakerFunction>,
+    waker_environment: *const ::uniffi::RustFutureForeignWakerEnvironment,
+    polled_result: &mut <u8 as ::uniffi::FfiReturn>::FfiType,
+    call_status: &mut ::uniffi::RustCallStatus,
+) -> bool {
+    ::uniffi::ffi::uniffi_rustfuture_poll(
+        future,
+        waker,
+        waker_environment,
+        polled_result,
+        call_status,
+    )
+}
+
+#[doc(hidden)]
+#[no_mangle]
+pub extern "C" fn _uniffi_uniffi_futures_fallible_me_d39d_drop(
+    future: ::std::option::Option<::std::boxed::Box<::uniffi::RustFuture<Result<u8, MyError>>>>,
+    call_status: &mut ::uniffi::RustCallStatus,
+) {
+    ::uniffi::ffi::uniffi_rustfuture_drop(future, call_status)
+}
+
+#[no_mangle]
+#[doc(hidden)]
+pub static UNIFFI_META_fallible_me: [u8; 102usize] = [
+    0u8, 0u8, 0u8, 0u8, 1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 14u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
+    0u8, 117u8, 110u8, 105u8, 102u8, 102u8, 105u8, 95u8, 102u8, 117u8, 116u8, 117u8, 114u8, 101u8,
+    115u8, 11u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 102u8, 97u8, 108u8, 108u8, 105u8, 98u8, 108u8,
+    101u8, 95u8, 109u8, 101u8, 1u8, 1u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 7u8, 0u8, 0u8, 0u8,
+    0u8, 0u8, 0u8, 0u8, 100u8, 111u8, 95u8, 102u8, 97u8, 105u8, 108u8, 10u8, 0u8, 0u8, 0u8, 1u8,
+    0u8, 0u8, 0u8, 0u8, 1u8, 7u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 77u8, 121u8, 69u8, 114u8,
+    114u8, 111u8, 114u8,
+];
+
 include!(concat!(env!("OUT_DIR"), "/uniffi_futures.uniffi.rs"));
 
 mod uniffi_types {
     pub(crate) use super::Megaphone;
+    pub(crate) use super::MyError;
 }

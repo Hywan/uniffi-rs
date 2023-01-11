@@ -255,7 +255,7 @@
 //! [`RawWaker`]: https://doc.rust-lang.org/std/task/struct.RawWaker.html
 
 use super::FfiDefault;
-use crate::{call_with_output, FfiReturn, RustCallStatus};
+use crate::{call_with_result, FfiReturn, RustBuffer, RustCallStatus};
 use std::{
     ffi::c_void,
     future::Future,
@@ -278,10 +278,7 @@ use std::{
 #[repr(transparent)]
 pub struct RustFuture<T>(Pin<Box<dyn Future<Output = T> + 'static>>);
 
-impl<T> RustFuture<T>
-where
-    T: FfiReturn,
-{
+impl<T> RustFuture<T> {
     /// Create a new `RustFuture` from a regular `Future` that outputs a value
     /// of kind `FfiConverter::RustType`.
     pub fn new<F>(future: F) -> Self
@@ -315,7 +312,10 @@ where
         &mut self,
         foreign_waker: RustFutureForeignWakerFunction,
         foreign_waker_environment: *const RustFutureForeignWakerEnvironment,
-    ) -> Poll<T::FfiType> {
+    ) -> RustFuturePoll<T>
+    where
+        T: std::fmt::Debug,
+    {
         let waker = unsafe {
             Waker::from_raw(RawWaker::new(
                 RustFutureForeignWaker::new(foreign_waker, foreign_waker_environment)
@@ -325,23 +325,36 @@ where
         };
         let mut context = Context::from_waker(&waker);
 
-        self.0.as_mut().poll(&mut context).map(T::lower)
+        dbg!(self.0.as_mut().poll(&mut context)).into()
     }
 }
 
-impl<T> FfiDefault for Option<Box<RustFuture<T>>>
-where
-    T: FfiReturn,
-{
+impl<T> FfiDefault for Option<Box<RustFuture<T>>> {
     fn ffi_default() -> Self {
         None
     }
 }
 
-impl<T> FfiDefault for Poll<T> {
-    /// The default value for `Poll<T>` is `Poll::Pending`.
+#[derive(Debug)]
+enum RustFuturePoll<T> {
+    Ready(T),
+    Pending,
+    Default,
+}
+
+impl<T> From<Poll<T>> for RustFuturePoll<T> {
+    fn from(value: Poll<T>) -> Self {
+        match value {
+            Poll::Ready(ready) => Self::Ready(ready),
+            Poll::Pending => Self::Pending,
+        }
+    }
+}
+
+impl<T> FfiDefault for RustFuturePoll<T> {
+    /// The default value for `RustFuturePoll<T>` is `RustFuturePoll::Default`.
     fn ffi_default() -> Self {
-        Self::Pending
+        Self::Default
     }
 }
 
@@ -355,8 +368,8 @@ mod tests_rust_future {
         let pointer_size = mem::size_of::<*const u8>();
         let rust_future_size = pointer_size * 2;
 
-        assert_eq!(mem::size_of::<RustFuture::<bool>>(), rust_future_size,);
-        assert_eq!(mem::size_of::<RustFuture::<u64>>(), rust_future_size,);
+        assert_eq!(mem::size_of::<RustFuture::<bool>>(), rust_future_size);
+        assert_eq!(mem::size_of::<RustFuture::<u64>>(), rust_future_size);
     }
 }
 
@@ -534,6 +547,36 @@ mod tests_raw_waker_vtable {
     }
 }
 
+pub trait IntoResult<T> {
+    type Output;
+
+    fn into_result(self) -> Result<Self::Output, RustBuffer>;
+}
+
+impl<T> IntoResult<T> for T {
+    type Output = T;
+
+    fn into_result(self) -> Result<Self::Output, RustBuffer> {
+        dbg!("inside into_result for T");
+        Ok(self)
+    }
+}
+
+// use crate::{FfiConverter, RustBufferFfiConverter};
+
+impl<T, E> IntoResult<T> for Result<T, E>
+// where
+// E: FfiError + RustBufferFfiConverter<RustType = E>,
+{
+    type Output = T;
+
+    fn into_result(self) -> Result<Self::Output, RustBuffer> {
+        dbg!("inside into_result for Result");
+        unimplemented!()
+        // self.map_err(|e| <E as FfiConverter>::lower(e))
+    }
+}
+
 /// Poll a [`RustFuture`]. If the `RustFuture` is ready, the function returns
 /// `true` and puts the result inside `polled_result`, otherwise it returns `false`
 /// and _doesn't change_ the value inside `polled_result`.
@@ -548,25 +591,55 @@ pub fn uniffi_rustfuture_poll<T>(
     future: Option<&mut RustFuture<T>>,
     waker: Option<RustFutureForeignWakerFunction>,
     waker_environment: *const RustFutureForeignWakerEnvironment,
-    polled_result: &mut T::FfiType,
+    // polled_result: &mut <<T as IntoRustCallResult<T>>::Output as FfiReturn>::FfiType,
+    polled_result: &mut <<T as IntoResult<T>>::Output as FfiReturn>::FfiType,
     call_status: &mut RustCallStatus,
 ) -> bool
 where
-    T: FfiReturn,
+    T: IntoResult<T> + std::fmt::Debug,
+    T::Output: FfiReturn,
 {
     // If polling the future panics, an error will be recorded in call_status and the future will
     // be dropped, so there is no potential for observing any inconsistent state in it.
     let mut future = panic::AssertUnwindSafe(future.expect("`future` is a null pointer"));
     let waker = waker.expect("`waker` is a null pointer");
 
-    match call_with_output(call_status, move || future.poll(waker, waker_environment)) {
-        Poll::Ready(result) => {
-            *polled_result = result;
+    match call_with_result(call_status, move || {
+        dbg!("POLLING");
+        let polled = future.poll(waker, waker_environment);
+        dbg!(&polled);
+        let transposed = match polled {
+            RustFuturePoll::Ready(ready) => match ready.into_result() {
+                Ok(ok) => Ok(RustFuturePoll::Ready(ok)),
+                _ => unimplemented!(),
+                // Err(error) => Err(error),
+            },
+
+            // other => Ok(other),
+            _ => unimplemented!(),
+        };
+        // let into_result = polled.into_result();
+        // dbg!(into_result.is_ok());
+
+        transposed
+    }) {
+        RustFuturePoll::Ready(ready) => {
+            dbg!("ready");
+            // *polled_result = <T::Output>::lower(ready);
 
             true
         }
 
-        Poll::Pending => false,
+        RustFuturePoll::Pending => {
+            dbg!("pending");
+            false
+        }
+
+        RustFuturePoll::Default => {
+            dbg!("default");
+
+            false
+        }
     }
 }
 
@@ -581,7 +654,5 @@ where
 pub fn uniffi_rustfuture_drop<T>(
     _future: Option<Box<RustFuture<T>>>,
     _call_status: &mut RustCallStatus,
-) where
-    T: FfiReturn,
-{
+) {
 }
