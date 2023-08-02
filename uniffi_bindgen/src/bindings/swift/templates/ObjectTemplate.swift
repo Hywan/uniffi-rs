@@ -12,9 +12,11 @@ public protocol {{ obj.name() }}Protocol {
 public class {{ type_name }}: {{ obj.name() }}Protocol {
     fileprivate let pointer: UnsafeMutableRawPointer
 
+    {#
     // TODO: We'd like this to be `private` but for Swifty reasons,
     // we can't implement `FfiConverter` without making this `required` and we can't
     // make it `required` without making it `public`.
+    #}
     required init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
         self.pointer = pointer
     }
@@ -44,11 +46,13 @@ public class {{ type_name }}: {{ obj.name() }}Protocol {
     {%- if meth.is_async() %}
 
     public func {{ meth.name()|fn_name }}({%- call swift::arg_list_decl(meth) -%}) async {% call swift::throws(meth) %}{% match meth.return_type() %}{% when Some with (return_type) %} -> {{ return_type|type_name }}{% when None %}{% endmatch %} {
+        {#
         // Suspend the function and call the scaffolding function, passing it a callback handler from
         // `AsyncTypes.swift`
         //
         // Make sure to hold on to a reference to the continuation in the top-level scope so that
         // it's not freed before the callback is invoked.
+        #}
         var continuation: {{ meth.result_type().borrow()|future_continuation_type }}? = nil
         return {% call swift::try(meth) %} await withCheckedThrowingContinuation {
             continuation = $0
